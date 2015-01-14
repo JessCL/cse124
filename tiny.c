@@ -13,6 +13,7 @@
 #define LISTENQ  1024  /* second argument to listen() */
 #define MAXLINE 1024
 
+//To be removed
 void handle_directory_request(int out_fd, int dir_fd, char *filename){
     char buf[MAXLINE], m_time[32], size[16];
     struct stat statbuf;
@@ -51,6 +52,10 @@ void handle_directory_request(int out_fd, int dir_fd, char *filename){
     closedir(d);
 }
 
+/* Error notcie from the server-side
+ * Parameters: client socket file descriptor, requested file descriptor, http request struct, size of the requested file
+ * Returns: Null
+ */
 void client_error(int fd, int status, char *msg, char *longmsg){
     char buf[MAXLINE];
     sprintf(buf, "HTTP/1.1 %d %s\r\n", status, msg);
@@ -60,55 +65,55 @@ void client_error(int fd, int status, char *msg, char *longmsg){
     write_to_client(fd, buf, strlen(buf));
 }
 
+/* Read the requested file on disk, and send it back to the remote side
+ * Parameters: client socket file descriptor, requested file descriptor, http request struct, size of the requested file
+ * Returns: Null
+ */
 
-void serve_static(int out_fd, int in_fd, http_request *req,
-                  size_t total_size){
-    char buf[256];
-    if (req->offset > 0){
-        sprintf(buf, "HTTP/1.1 206 Partial\r\n");
-        sprintf(buf + strlen(buf), "Content-Range: bytes %lu-%lu/%lu\r\n",
-                req->offset, req->end, total_size);
-    } else {
-        sprintf(buf, "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\n");
-    }
-    sprintf(buf + strlen(buf), "Cache-Control: no-cache\r\n");
-    // sprintf(buf + strlen(buf), "Cache-Control: public, max-age=315360000\r\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\r\n");
+void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size){
+  char buf[256];
+  if (req->offset > 0){
+    sprintf(buf, "HTTP/1.1 206 Partial\r\n");
+    sprintf(buf + strlen(buf), "Content-Range: bytes %lu-%lu/%lu\r\n",
+            req->offset, req->end, total_size);
+  } else {
+    sprintf(buf, "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\n");
+  }
+  sprintf(buf + strlen(buf), "Cache-Control: no-cache\r\n");
+  // sprintf(buf + strlen(buf), "Cache-Control: public, max-age=315360000\r\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\r\n");
 
-    sprintf(buf + strlen(buf), "Content-length: %lu\r\n",
-            req->end - req->offset);
-    sprintf(buf + strlen(buf), "Content-type: %s\r\n\r\n",
-            get_mime_type(req->filename));
+  sprintf(buf + strlen(buf), "Content-length: %lu\r\n",
+          req->end - req->offset);
+  sprintf(buf + strlen(buf), "Content-type: %s\r\n\r\n",
+          get_mime_type(req->filename));
 
-    write_to_client(out_fd, buf, strlen(buf));
-    off_t offset = req->offset; /* copy */
-    while(offset < req->end){
-        if(sendfile_to(out_fd, in_fd, &offset, req->end - req->offset) <= 0) {
-            break;
-        }
-        printf("offset: %d \n\n", offset);
-        close(out_fd);
+  write_to_client(out_fd, buf, strlen(buf));
+  off_t offset = req->offset; /* copy */
+  while(offset < req->end){
+    if(sendfile_to(out_fd, in_fd, &offset, req->end - req->offset) <= 0) {
         break;
     }
+    printf("offset: %d \n\n", offset);
+    close(out_fd);
+    break;
+  }
 }
 
+/* Parse the client request, acquire the requested file name
+ * Parameters: client socket file descriptor, http request struct that we want to fill and return
+ * Returns: Null
+ */
 void parse_request(int fd, http_request *req){
   rio_t rio;
   char buf[MAXLINE], method[MAXLINE], uri[MAXLINE];
   req->offset = 0;
-  req->end = 0;              /* default */
+  req->end = 0;              
 
   rio_readinitb(&rio, fd);
   rio_readlineb(&rio, buf, MAXLINE);
-  sscanf(buf, "%s %s", method, uri); /* version is not cared */
-  /* read all */
-  while(buf[0] != '\n' && buf[1] != '\n') { /* \n || \r\n */
-    rio_readlineb(&rio, buf, MAXLINE);
-    if(buf[0] == 'R' && buf[1] == 'a' && buf[2] == 'n'){
-        sscanf(buf, "Range: bytes=%lu-%lu", &req->offset, &req->end);
-        // Range: [start, end]
-        if( req->end != 0) req->end ++;
-    }
-  }
+  // TODO, parse the http version, and set flag
+  sscanf(buf, "%s %s", method, uri); 
+
   char* filename = uri;
   if(uri[0] == '/'){
     filename = uri + 1;
@@ -124,35 +129,47 @@ void parse_request(int fd, http_request *req){
       }
     }
   }
+
   url_decode(filename, req->filename, MAXLINE);
 }
 
+/* Parse the http request, process it and generate response
+ * Parameters: Client socket file descripton, client socket address info
+ * Returns: None
+ */
+
 void process(int fd, struct sockaddr_in *clientaddr){
   http_request req;
+  //Parse the http request, retrive the file name etc.
   parse_request(fd, &req);
 
   struct stat sbuf;
-  int status = 200, ffd = open(req.filename, O_RDONLY, 0);
+  int status = 200
+  int ffd = open(req.filename, O_RDONLY, 0);
+
   if(ffd <= 0){
+    //File not found
     status = 404;
     char *msg = "File not found";
     client_error(fd, status, "Not found", msg);
   } else {
     fstat(ffd, &sbuf);
-    //TODO: figure out what is this all about.
+    //Check if is a regular file?
     if(S_ISREG(sbuf.st_mode)){
       if (req.end == 0){
-          req.end = sbuf.st_size;
+        req.end = sbuf.st_size;
       }
+      // if is requesting partial content, then set the status code to 206
       if (req.offset > 0){
-          status = 206;
+        status = 206;
       }
       serve_static(fd, ffd, &req, sbuf.st_size);
     } else if(S_ISDIR(sbuf.st_mode)){
       status = 200;
-      //Append index.html to file path and try to render, if not, then return 404
+      //TODO Append index.html to file path and try to render, if not, then return 404
       handle_directory_request(fd, ffd, req.filename);
     } else {
+      //Malfored request, http 400 error
       status = 400;
       char *msg = "Unknow Error";
       client_error(fd, status, "Error", msg);
@@ -161,11 +178,17 @@ void process(int fd, struct sockaddr_in *clientaddr){
   }
 }
 
+/* Socket initialization, listen for web connections
+ * on a specified port. 
+ * Parameters: pointer to variable containing the port to connect on
+ * Returns: the socket 
+ */
+
 int startup(int port){
   int httpd = 0;
   int optval = 1;
   struct sockaddr_in name;
-
+  //Following code snippets from TCP/IP Sockets in C
   httpd = socket(AF_INET, SOCK_STREAM, 0);
 
   if (httpd == -1)
@@ -204,14 +227,16 @@ int main(int argc, char *argv[]){
   char *path = getcwd(buf, 256);
   socklen_t clientlen = sizeof clientaddr;
 
+  //Setup port number and root directory path
   default_port = atoi(argv[1]);
   path = argv[2];
 
-
+  //Initialize the socket
   server_sock = startup(default_port);
 
   signal(SIGPIPE, SIG_IGN);
 
+  // Concurrency handling, multi-process approach
   for(int i = 0; i < 10; i++) {
     int pid = fork();
     if (pid == 0) {         //  child
