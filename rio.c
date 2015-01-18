@@ -1,18 +1,6 @@
 // Robust I/O package
 
-#include <unistd.h>
-#include <errno.h>
-
-#define RIO_BUFSIZE 1024
-#define BUF_SIZE 4096
-
-
-typedef struct {
-  int rio_fd;                 /* descriptor for this buf */
-  int rio_cnt;                /* unread byte in this buf */
-  char *rio_bufptr;           /* next unread byte in this buf */
-  char rio_buf[RIO_BUFSIZE];  /* internal buffer */
-} rio_t;
+#include "rio.h"
 
 
 void rio_readinitb(rio_t *rp, int fd){
@@ -21,7 +9,7 @@ void rio_readinitb(rio_t *rp, int fd){
   rp->rio_bufptr = rp->rio_buf;
 }
 
-ssize_t write_to_client(int fd, void *usrbuf, size_t n){
+ssize_t send_data(int fd, void *usrbuf, size_t n){
   size_t nleft = n;
   ssize_t nwritten;
   char *bufp = usrbuf;
@@ -154,3 +142,4 @@ ssize_t sendfile_to(int out_fd, int in_fd, off_t *offset, size_t count)
 
   return totSent;
 }
+
