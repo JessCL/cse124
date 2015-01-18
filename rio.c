@@ -88,6 +88,7 @@ ssize_t rio_readlineb(rio_t *rp, void *usrbuf, size_t maxlen){
   return n;
 }
 
+//Linux sendfile 
 ssize_t sendfile_to(int out_fd, int in_fd, off_t *offset, size_t count)
 {
   off_t orig;
@@ -123,7 +124,7 @@ ssize_t sendfile_to(int out_fd, int in_fd, off_t *offset, size_t count)
     if (numSent == -1)
         return -1;
     if (numSent == 0)               /* Should never happen */
-       // fatal("sendfile: write() transferred 0 bytes");
+       DieWithSystemMessage("sendfile: write() transferred 0 bytes");
 
     count -= numSent;
     totSent += numSent;
