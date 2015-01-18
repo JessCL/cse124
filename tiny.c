@@ -115,6 +115,18 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
 
   struct stat sbuf;
   int status = 200;
+  int file_access_flag;
+
+  //File permission handling, if can't read, return 403 msg
+  file_access_flag = access(req.filename, R_OK);
+  printf("file access tag %d\n", file_access_flag);
+  if(file_access_flag < 0){
+    status = 403;
+    char *msg = "Permission denied";
+    client_error(fd, status, "Forbidden", msg);
+    return;
+  }
+
   int ffd = open(req.filename, O_RDONLY, 0);
 
   if(ffd <= 0){
