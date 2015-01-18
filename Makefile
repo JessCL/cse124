@@ -1,12 +1,9 @@
 CC = c99
-CFLAGS = -Wall -O2
-
-# LIB = -lpthread
 
 all: tiny
 
 tiny: tiny.c
-	$(CC) $(CFLAGS) -o tiny tiny.c $(LIB)
+	$(CC) -o tiny tiny.c DieWithMessage.c rio.c util.c
 
 clean:
 	rm -f *.o tiny *~

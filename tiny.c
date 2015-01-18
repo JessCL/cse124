@@ -1,13 +1,8 @@
-#include <arpa/inet.h>          
 #include <signal.h>
-#include <dirent.h>
 #include <fcntl.h>
 #include <time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include "rio.h"
 #include "util.h"
 
@@ -20,7 +15,7 @@ void DieWithSystemMessage(const char *msg);
  * Parameters: client socket file descriptor, requested file descriptor, http request struct, size of the requested file
  * Returns: Null
  */
-void client_error(int fd, int status, char *msg, char *longmsg){
+void send_error_msg(int fd, int status, char *msg, char *longmsg){
     char buf[MAXLINE];
     // HTTP/1.1 200 Not Found
     // Content-length xxx 
@@ -39,14 +34,14 @@ void client_error(int fd, int status, char *msg, char *longmsg){
 void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size){
   char buf[256];
 
-  sprintf(buf, "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\n");
+  sprintf(buf, "HTTP/1.1 200 OK\r\n");
   
   sprintf(buf + strlen(buf), "Content-length: %llu\r\n", req->end - req->offset);
   sprintf(buf + strlen(buf), "Content-type: %s\r\n\r\n", get_mime_type(req->filename));
 
   send_data(out_fd, buf, strlen(buf));
 
-  off_t offset = req->offset; /* copy */
+  off_t offset = req->offset;
 
   while(offset < req->end){
     if(sendfile_to(out_fd, in_fd, &offset, req->end - req->offset) <= 0) {
@@ -123,7 +118,7 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
   if(file_access_flag < 0){
     status = 403;
     char *msg = "Permission denied";
-    client_error(fd, status, "Forbidden", msg);
+    send_error_msg(fd, status, "Forbidden", msg);
     return;
   }
 
@@ -133,7 +128,7 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
     //File not found
     status = 404;
     char *msg = "Page Not Found";
-    client_error(fd, status, "Not found", msg);
+    send_error_msg(fd, status, "Not found", msg);
   } else {
     fstat(ffd, &sbuf);
     //Check if is a regular file?
@@ -146,7 +141,7 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
       //Malfored request, http 400 error
       status = 400;
       char *msg = "Unknow Error";
-      client_error(fd, status, "Error", msg);
+      send_error_msg(fd, status, "Error", msg);
     }
     close(ffd);
   }
@@ -160,18 +155,12 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
 
 int socket_initilization(int port){
   int httpd = 0;
-  int optval = 1;
   struct sockaddr_in name;
   //Following code snippets from TCP/IP Sockets in C
   httpd = socket(AF_INET, SOCK_STREAM, 0);
 
   if (httpd == -1)
     DieWithSystemMessage("socket");
-
-  if (setsockopt(httpd, SOL_SOCKET, SO_REUSEADDR,
-                 (const void *)&optval , sizeof(int)) < 0)
-    return -1;
-
 
   memset(&name, 0, sizeof(name));
   name.sin_family = AF_INET;
@@ -193,12 +182,12 @@ int main(int argc, char *argv[]){
 
   struct sockaddr_in clientaddr;
   
-  int default_port = 9999,
+  int default_port = 3000,
       server_sock,
       client_sock;
 
-  char buf[256];
-  char *path = getcwd(buf, 256);
+  char buf[1024];
+  char *path = getcwd(buf, 1024);
   socklen_t clientlen = sizeof clientaddr;
 
   //Setup port number and root directory path
@@ -219,6 +208,12 @@ int main(int argc, char *argv[]){
 
         if (client_sock == -1)
           DieWithSystemMessage("accept");
+
+        printf("%d.%d.%d.%d\n",
+          (int)(clientaddr.sin_addr.s_addr&0xFF),
+          (int)((clientaddr.sin_addr.s_addr&0xFF00)>>8),
+          (int)((clientaddr.sin_addr.s_addr&0xFF0000)>>16),
+          (int)((clientaddr.sin_addr.s_addr&0xFF000000)>>24));
 
         process(client_sock, &clientaddr, path);
         close(client_sock);
