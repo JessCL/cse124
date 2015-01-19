@@ -1,4 +1,5 @@
 #include "util.h"
+#include "DieWithMessage.h"
 
 mime_map meme_types [] = {
   {".css", "text/css"},

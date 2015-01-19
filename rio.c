@@ -1,7 +1,7 @@
 // Robust I/O package
 
 #include "rio.h"
-
+#include "DieWithMessage.h"
 
 void rio_readinitb(rio_t *rp, int fd){
   rp->rio_fd = fd;

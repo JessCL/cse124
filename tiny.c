@@ -3,6 +3,7 @@
 #include <time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <netdb.h>
 #include "rio.h"
 #include "util.h"
 
@@ -84,7 +85,8 @@ void parse_request(int fd, http_request *req, char *addr){
     strcat(prefix_addr, "/");
   }
 
-  // printf("file name: %s\n", filename);
+  //printf("file name: %s\n", filename);
+
   strcat(prefix_addr, filename);
 
   int ffd = open(prefix_addr, O_RDONLY, 0);
@@ -98,6 +100,90 @@ void parse_request(int fd, http_request *req, char *addr){
   url_decode(prefix_addr, req->filename, MAXLINE);
 }
 
+/* Handle access permission according to .htaccess files
+ * Parameters:
+ * Return:
+ */
+int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
+  char htaccess_filename[512];
+  strcpy(htaccess_filename, filename);
+  char *slash = strrchr(htaccess_filename, '/');
+  if(slash){
+    strcpy(slash, "/root.htaccess");
+    int ffd = open(htaccess_filename, O_RDONLY, 0);
+    if(ffd <= 0){
+      //If there is no .htaccess file, allow access
+      return 1;
+    }
+    else{
+      printf("Success open htaccess file\n");//////////////
+      rio_t rio;
+      char buf[MAXLINE], accPerm[MAXLINE], fromChar[MAXLINE], tmpbuf[MAXLINE];
+      unsigned int subnet[5];
+      rio_readinitb(&rio, ffd);
+      ssize_t read_size;
+      int addrFlag;
+      do{
+        read_size = rio_readlineb(&rio, buf, MAXLINE);
+        sscanf(buf, "%s %s %s", accPerm, fromChar, tmpbuf);
+        addrFlag = 1;
+        int pos = 0;
+        unsigned int IPaddr;
+        while(tmpbuf[pos]){
+          if(!((tmpbuf[pos]>='0' && tmpbuf[pos]<='9') || tmpbuf[pos]=='.' || tmpbuf[pos]=='/')) {
+            addrFlag = 0;
+            break;
+          }
+          ++pos;
+        }
+        if(addrFlag){//the entry contains an IP address
+          printf("Handling addrs in htaccess\n");
+          sscanf(tmpbuf, "%u.%u.%u.%u/%u", 
+            &subnet[0], &subnet[1], &subnet[2], &subnet[3], &subnet[4]); 
+          IPaddr = (subnet[0]<<24)+(subnet[1]<<16)+(subnet[2]<<8)+subnet[3];
+          IPaddr = (IPaddr>>(32-subnet[4]))<<(32-subnet[4]);
+          /*printf("in file %u, client %u\n", IPaddr, 
+            (ntohl(clientaddr->sin_addr.s_addr)>>(32-subnet[4])<<(32-subnet[4])));*/
+          
+        }
+        else{//the entry contains a domain name
+          printf("Getting host by name\n");
+          struct hostent host, *hostptr = &host;
+          hostptr = gethostbyname(tmpbuf);
+          if(hostptr){
+            IPaddr = ntohl(*(int*)hostptr->h_addr_list[0]);//How could I know how many entries are in the list
+            printf("h_addr_list[0] is %u\n", ntohl(*(int*)hostptr->h_addr_list[0]));/////////////
+            printf("h_length is %d\n", hostptr->h_length);//////////////
+          }
+          else
+            continue;
+        }
+        unsigned int clientAddrMatch;
+        if(subnet[4]==0)
+          clientAddrMatch = 0;
+        else
+          clientAddrMatch = (ntohl(clientaddr->sin_addr.s_addr)>>(32-subnet[4])<<(32-subnet[4]));
+        if(IPaddr == clientAddrMatch) {
+          if(strcmp("allow",accPerm)==0)
+            return 1;
+          if(strcmp("deny",accPerm)==0)
+            return 0;
+        }
+      }
+      while(read_size>0);
+
+      //If there is no match in the file, allow access.
+      return 1;
+
+      close(ffd);
+    }
+  }
+  else{
+    DieWithUserMessage("<Malformed>", "<There should be a '/'>");
+    return 1;
+  }
+}
+
 /* Parse the http request, process it and generate response
  * Parameters: Client socket file descripton, client socket address info
  * Returns: None
@@ -105,23 +191,22 @@ void parse_request(int fd, http_request *req, char *addr){
 
 void process(int fd, struct sockaddr_in *clientaddr, char *addr){
   http_request req;
+  
   //Parse the http request, retrive the file name etc.
   parse_request(fd, &req, addr);
+
+  //test////////////////////////
+  printf("%s   ", req.filename);
 
   struct stat sbuf;
   int status = 200;
   int file_access_flag;
 
-  //File permission handling, if can't read, return 403 msg
-  file_access_flag = access(req.filename, R_OK);
-  printf("file access tag %d\n", file_access_flag);
-  if(file_access_flag < 0){
-    status = 403;
-    char *msg = "Permission denied";
-    send_error_msg(fd, status, "Forbidden", msg);
-    return;
-  }
+  int accessStatus = handle_htaccess(clientaddr, req.filename);
+  printf("access status is %d\n", accessStatus);///////////////
 
+  if(accessStatus){
+    //if this directory is not allowed to access
   int ffd = open(req.filename, O_RDONLY, 0);
 
   if(ffd <= 0){
@@ -136,6 +221,15 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
       if (req.end == 0){
         req.end = sbuf.st_size;
       }
+      //File permission handling, if can't read, return 403 msg
+      file_access_flag = access(req.filename, R_OK);
+      printf("file access tag %d\n", file_access_flag);
+      if(file_access_flag < 0){
+        status = 403;
+        char *msg = "Permission denied";
+        send_error_msg(fd, status, "Forbidden", msg);
+        return;
+      }
       serve_static(fd, ffd, &req, sbuf.st_size);
     } else {
       //Malfored request, http 400 error
@@ -144,6 +238,7 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
       send_error_msg(fd, status, "Error", msg);
     }
     close(ffd);
+  }
   }
 }
 
@@ -157,7 +252,7 @@ int socket_initilization(int port){
   int httpd = 0;
   struct sockaddr_in name;
   //Following code snippets from TCP/IP Sockets in C
-  httpd = socket(AF_INET, SOCK_STREAM, 0);
+  httpd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
   if (httpd == -1)
     DieWithSystemMessage("socket");
