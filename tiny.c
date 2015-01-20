@@ -101,14 +101,15 @@ void parse_request(int fd, http_request *req, char *addr){
 }
 
 /* Handle access permission according to .htaccess files
- * Parameters:
- * Return:
+ * Parameters: client socket address structure, the file name(include path) the client want to access
+ * Return:int {0,1}, 0 represents deny and 1 represents allow.
  */
 int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
   char htaccess_filename[512];
   strcpy(htaccess_filename, filename);
   char *slash = strrchr(htaccess_filename, '/');
   if(slash){
+    //TODO find the htaccess file with any name
     strcpy(slash, "/root.htaccess");
     int ffd = open(htaccess_filename, O_RDONLY, 0);
     if(ffd <= 0){
@@ -144,16 +145,15 @@ int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
           IPaddr = (IPaddr>>(32-subnet[4]))<<(32-subnet[4]);
           /*printf("in file %u, client %u\n", IPaddr, 
             (ntohl(clientaddr->sin_addr.s_addr)>>(32-subnet[4])<<(32-subnet[4])));*/
-          
         }
         else{//the entry contains a domain name
           printf("Getting host by name\n");
           struct hostent host, *hostptr = &host;
           hostptr = gethostbyname(tmpbuf);
           if(hostptr){
+            //TODO Dealing with the situation that there are multiple addresses in h_addr_list
             IPaddr = ntohl(*(int*)hostptr->h_addr_list[0]);//How could I know how many entries are in the list
-            printf("h_addr_list[0] is %u\n", ntohl(*(int*)hostptr->h_addr_list[0]));/////////////
-            printf("h_length is %d\n", hostptr->h_length);//////////////
+            //printf("h_addr_list[0] is %u\n", ntohl(*(int*)hostptr->h_addr_list[0]));/////////////
           }
           else
             continue;
