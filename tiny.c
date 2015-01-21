@@ -16,12 +16,12 @@ void DieWithSystemMessage(const char *msg);
  * Parameters: client socket file descriptor, requested file descriptor, http request struct, size of the requested file
  * Returns: Null
  */
-void send_error_msg(int fd, int status, char *msg, char *longmsg){
+void send_error_msg(int fd, int status, char *msg, char *longmsg, char *type){
     char buf[MAXLINE];
     // HTTP/1.1 200 Not Found
     // Content-length xxx 
     // Message body
-    sprintf(buf, "HTTP/1.1 %d %s\r\n", status, msg);
+    sprintf(buf, "%s %d %s\r\n", type, status, msg);
     sprintf(buf + strlen(buf), "Content-length: %lu\r\n\r\n", strlen(longmsg));
     sprintf(buf + strlen(buf), "%s", longmsg);
     send_data(fd, buf, strlen(buf));
@@ -32,10 +32,10 @@ void send_error_msg(int fd, int status, char *msg, char *longmsg){
  * Returns: Null
  */
 
-void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size){
+void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size, char *type){
   char buf[256];
 
-  sprintf(buf, "HTTP/1.1 200 OK\r\n");
+  sprintf(buf, "%s 200 OK\r\n", type);
   
   sprintf(buf + strlen(buf), "Content-length: %llu\r\n", req->end - req->offset);
   sprintf(buf + strlen(buf), "Content-type: %s\r\n\r\n", get_mime_type(req->filename));
@@ -43,7 +43,6 @@ void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size){
   send_data(out_fd, buf, strlen(buf));
 
   off_t offset = req->offset;
-
   while(offset < req->end){
     if(sendfile_to(out_fd, in_fd, &offset, req->end - req->offset) <= 0) {
       break;
@@ -59,7 +58,7 @@ void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size){
  */
 void parse_request(int fd, http_request *req, char *addr){
   rio_t rio;
-  char buf[MAXLINE], method[MAXLINE], uri[MAXLINE];
+  char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
   char prefix_addr[MAXLINE];
   req->offset = 0;
   req->end = 0;         
@@ -69,8 +68,10 @@ void parse_request(int fd, http_request *req, char *addr){
 
   rio_readinitb(&rio, fd);
   rio_readlineb(&rio, buf, MAXLINE);
-  // TODO, parse the http version, and set flag
-  sscanf(buf, "%s %s", method, uri); 
+  // TODO, parse the http version, and set flag, if is not GET, 400 error
+  sscanf(buf, "%s %s %s", method, uri, version); 
+
+  printf("%s %s %s\n",method, uri, version);
 
   char* filename = uri;
   if(uri[0] == '/'){
@@ -97,7 +98,9 @@ void parse_request(int fd, http_request *req, char *addr){
     }
   }
 
-  url_decode(prefix_addr, req->filename, MAXLINE);
+  memcpy(req->filename, prefix_addr, MAXLINE); 
+  memcpy(req->type, version, MAXLINE); 
+  memcpy(req->method, method, MAXLINE);
 }
 
 /* Handle access permission according to .htaccess files
@@ -195,6 +198,14 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
   //Parse the http request, retrive the file name etc.
   parse_request(fd, &req, addr);
 
+  if(strcmp(req.method, "GET") != 0 || !(strcmp(req.type, "HTTP/1.0") == 0 || strcmp(req.type, "HTTP/1.1") == 0) ){
+    int status = 400;
+    char *msg = "Unknow Error";
+    send_error_msg(fd, status, "Error", msg, req.type);
+    return;
+  }
+
+
   //test////////////////////////
   printf("%s   ", req.filename);
 
@@ -206,39 +217,39 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
   printf("access status is %d\n", accessStatus);///////////////
 
   if(accessStatus){
-    //if this directory is not allowed to access
-  int ffd = open(req.filename, O_RDONLY, 0);
+      //if this directory is not allowed to access
+    int ffd = open(req.filename, O_RDONLY, 0);
 
-  if(ffd <= 0){
-    //File not found
-    status = 404;
-    char *msg = "Page Not Found";
-    send_error_msg(fd, status, "Not found", msg);
-  } else {
-    fstat(ffd, &sbuf);
-    //Check if is a regular file?
-    if(S_ISREG(sbuf.st_mode)){
-      if (req.end == 0){
-        req.end = sbuf.st_size;
-      }
-      //File permission handling, if can't read, return 403 msg
-      file_access_flag = access(req.filename, R_OK);
-      printf("file access tag %d\n", file_access_flag);
-      if(file_access_flag < 0){
-        status = 403;
-        char *msg = "Permission denied";
-        send_error_msg(fd, status, "Forbidden", msg);
-        return;
-      }
-      serve_static(fd, ffd, &req, sbuf.st_size);
+    if(ffd <= 0){
+      //File not found
+      status = 404;
+      char *msg = "Page Not Found";
+      send_error_msg(fd, status, "Not found", msg, req.type);
     } else {
-      //Malfored request, http 400 error
-      status = 400;
-      char *msg = "Unknow Error";
-      send_error_msg(fd, status, "Error", msg);
+      fstat(ffd, &sbuf);
+      //Check if is a regular file?
+      if(S_ISREG(sbuf.st_mode)){
+        if (req.end == 0){
+          req.end = sbuf.st_size;
+        }
+        //File permission handling, if can't read, return 403 msg
+        file_access_flag = access(req.filename, R_OK);
+        printf("file access tag %d\n", file_access_flag);
+        if(file_access_flag < 0){
+          status = 403;
+          char *msg = "Permission denied";
+          send_error_msg(fd, status, "Forbidden", msg, req.type);
+          return;
+        }
+        serve_static(fd, ffd, &req, sbuf.st_size, req.type);
+      } else {
+        //Malfored request, http 400 error
+        status = 400;
+        char *msg = "Unknow Error";
+        send_error_msg(fd, status, "Error", msg, req.type);
+      }
+      close(ffd);
     }
-    close(ffd);
-  }
   }
 }
 
