@@ -1,4 +1,5 @@
 #include "util.h"
+#include "DieWithMessage.h"
 
 mime_map meme_types [] = {
   {".css", "text/css"},
@@ -26,12 +27,3 @@ const char* get_mime_type(char *filename){
   }
   return default_mime_type;
 }
-
-void url_decode(char* src, char* dest, int max) {
-  char *p = src;
-  while(*p && --max) {
-    *dest++ = *p++;
-  }
-  *dest = '\0';
-}
-

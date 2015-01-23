@@ -1,9 +1,9 @@
 CC = c99
 
-all: tiny
+all: httpd
 
-tiny: tiny.c
-	$(CC) -o tiny tiny.c DieWithMessage.c rio.c util.c
+httpd: server.c
+	$(CC) -o httpd server.c DieWithMessage.c rio.c util.c
 
 clean:
-	rm -f *.o tiny *~
+	rm -f *.o httpd *~
