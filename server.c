@@ -4,6 +4,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <string.h>
 #include "rio.h"
 #include "util.h"
 
@@ -103,17 +110,53 @@ void parse_request(int fd, http_request *req, char *addr){
   memcpy(req->method, method, MAXLINE);
 }
 
+char* getFileName(char * dirPath, char * fileType)
+{
+  DIR *dir=opendir(dirPath);
+  if(dir==NULL)
+    return NULL;
+  chdir(dirPath);
+  struct dirent *mydirent;
+  char * filename;
+  while((mydirent=readdir(dir)) != NULL)
+  {
+    int size = strlen(mydirent->d_name);
+    if(strcmp( ( mydirent->d_name + (size - strlen(fileType)) ) , fileType) != 0)//ignore other files or dir 
+      continue;
+   
+    struct stat st;
+    stat(mydirent->d_name,&st);
+    if(!S_ISDIR(st.st_mode))  //if it is not a child directory, return the file name
+    {
+      filename = (char*)malloc(256);
+      strcpy(filename, mydirent->d_name);//make one copy for return
+      //Here we assume that there is only one ".htaccess" file
+      closedir(dir);
+      return filename;
+    }
+  }
+  return NULL;
+}
+
 /* Handle access permission according to .htaccess files
  * Parameters: client socket address structure, the file name(include path) the client want to access
  * Return:int {0,1}, 0 represents deny and 1 represents allow.
  */
 int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
-  char htaccess_filename[512];
+  char htaccess_filename[MAXLINE];
   strcpy(htaccess_filename, filename);
   char *slash = strrchr(htaccess_filename, '/');
+  char *htaccessfilenamewodir;
   if(slash){
-    //TODO find the htaccess file with any name
-    strcpy(slash, "/root.htaccess");
+    slash[1] = '\0';
+    htaccessfilenamewodir = getFileName( htaccess_filename, ".htaccess");
+    if(htaccessfilenamewodir == NULL){
+      
+      return 1;//If there is no .htaccess file, allow access
+    }
+
+    strcat(htaccess_filename, htaccessfilenamewodir);
+    free(htaccessfilenamewodir);
     int ffd = open(htaccess_filename, O_RDONLY, 0);
     if(ffd <= 0){
       //If there is no .htaccess file, allow access
@@ -204,10 +247,6 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
     send_error_msg(fd, status, "Error", msg, req.type);
     return;
   }
-
-
-  //test////////////////////////
-  printf("%s   ", req.filename);
 
   struct stat sbuf;
   int status = 200;
