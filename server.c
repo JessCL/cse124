@@ -18,6 +18,29 @@ void DieWithUserMessage(const char *msg, const char *detail);
 // Handle error with sys msg
 void DieWithSystemMessage(const char *msg);
 
+#define URI_SZ      1024
+#define METHOD_SZ   5
+#define VERSION_SZ  10
+#define REQUEST_SZ 1024
+
+
+int getSO_ERROR(int fd) {
+   int err = 1;
+   socklen_t len = sizeof err;
+   if (-1 == getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len))
+      //FatalError("getSO_ERROR");
+   if (err)
+      errno = err;              // set errno to the socket SO_ERROR
+   return err;
+}
+
+void closeSocket(int fd) {      // *not* the Windows closesocket()
+   if (fd >= 0) {
+      getSO_ERROR(fd); // first clear any errors, which can cause close to fail
+      shutdown(fd, SHUT_RDWR); // secondly, terminate the 'reliable' delivery
+   }
+}
+
 
 char* getFileName(char * dirPath, char * fileType)
 {
@@ -179,58 +202,75 @@ void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size, c
  * Parameters: client socket file descriptor, http request struct that we want to fill and return
  * Returns: Null
  */
-int parse_request(int fd, http_request *req, char *addr){
+int parse_request(int fd, http_request reqs[], char *addr){
   rio_t rio;
-  char buf[MAXLINE*128], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-  char prefix_addr[MAXLINE];
-  req->offset = 0;
-  req->end = 0;         
+  char buf[MAXLINE * 128], method[METHOD_SZ], uri[URI_SZ], version[VERSION_SZ];
+  
   struct stat sbuf;     
-
-  strcpy(prefix_addr, addr);
 
   // rio_readinitb(&rio, fd);
   // rio_readlineb(&rio, buf, MAXLINE);
-  if( recv(fd, buf, MAXLINE*128, 0) <= 0){
+  if( recv(fd, buf, MAXLINE * 128, 0) > 0){
+    // printf("inside recv loop %s\n", buf);
+
+    char * line = strtok(strdup(buf), "\r\n");
+    while(line) {
+      sscanf(line, "%s %s %s", method, uri, version);  
+
+      if(strcmp(method, "GET") == 0){
+        char prefix_addr[MAXLINE];
+        strcpy(prefix_addr, addr);
+
+        for(int i = 0; i < REQUEST_SZ; i++){
+          if(reqs[i].assigned == 0){
+            reqs[i].offset = 0;
+            reqs[i].end = 0;         
+
+            reqs[i].assigned = 1;
+
+            char* filename = uri;
+            if(uri[0] == '/'){
+              filename = uri + 1;
+              int length = strlen(filename);
+              if (length == 0){
+                filename = "index.html";
+              }
+            }
+
+            if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
+              strcat(prefix_addr, "/");
+            }
+
+            //printf("file name: %s\n", filename);
+
+            strcat(prefix_addr, filename);
+
+            int ffd = open(prefix_addr, O_RDONLY, 0);
+            if(ffd > 0){
+              fstat(ffd, &sbuf);
+              if(S_ISDIR(sbuf.st_mode)){
+                strcat(prefix_addr, "/index.html");
+              }
+            }
+            printf("%s\n",prefix_addr);
+            memcpy(reqs[i].filename, prefix_addr, MAXLINE); 
+            memcpy(reqs[i].type, version, VERSION_SZ); 
+            memcpy(reqs[i].method, method, METHOD_SZ);
+            break;
+          }
+        }      
+      }
+      line  = strtok(NULL, "\r\n");
+    }
+
+    return 1;
+  }else{
     return -1;
   }
-
-  printf("%s\n", buf);
   // TODO, parse the http version, and set flag, if is not GET, 400 error
-  sscanf(buf, "%s %s %s", method, uri, version); 
+  // sscanf(buf, "%s %s %s", method, uri, version); 
 
-  printf("parsed results: %d        %s %s %s\n",fd, method, uri, version);
-
-  char* filename = uri;
-  if(uri[0] == '/'){
-    filename = uri + 1;
-    int length = strlen(filename);
-    if (length == 0){
-      filename = "index.html";
-    }
-  }
-
-  if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
-    strcat(prefix_addr, "/");
-  }
-
-  //printf("file name: %s\n", filename);
-
-  strcat(prefix_addr, filename);
-
-  int ffd = open(prefix_addr, O_RDONLY, 0);
-  if(ffd > 0){
-    fstat(ffd, &sbuf);
-    if(S_ISDIR(sbuf.st_mode)){
-      strcat(prefix_addr, "/index.html");
-    }
-  }
-
-  memcpy(req->filename, prefix_addr, MAXLINE); 
-  memcpy(req->type, version, MAXLINE); 
-  memcpy(req->method, method, MAXLINE);
-
-  return 1;
+  // printf("parsed results: %d        %s %s %s\n",fd, method, uri, version);
 }
 
 
@@ -240,60 +280,67 @@ int parse_request(int fd, http_request *req, char *addr){
  */
 
 void process(int fd, struct sockaddr_in *clientaddr, char *addr){
-  http_request req;
+  http_request reqs[REQUEST_SZ];
 
   //Parse the http request, retrive the file name etc.
-  if( parse_request(fd, &req, addr) == -1 ){
+  if( parse_request(fd, reqs, addr) == -1 ){
     return;
   }
 
-  if(strcmp(req.method, "GET") != 0 || !(strcmp(req.type, "HTTP/1.0") == 0 || strcmp(req.type, "HTTP/1.1") == 0) ){
-    int status = 400;
-    char *msg = "Unknow Error";
-    send_error_msg(fd, status, "Error", msg, req.type);
-    return;
-  }
-
-  struct stat sbuf;
-  int status = 200;
-  int file_access_flag;
-
-  int accessStatus = handle_htaccess(clientaddr, req.filename);
-  printf("access status is %d\n", accessStatus);///////////////
-
-  if(accessStatus){
-      //if this directory is not allowed to access
-    int ffd = open(req.filename, O_RDONLY, 0);
-
-    if(ffd <= 0){
-      //File not found
-      status = 404;
-      char *msg = "Page Not Found";
-      send_error_msg(fd, status, "Not found", msg, req.type);
-    } else {
-      fstat(ffd, &sbuf);
-      //Check if is a regular file?
-      if(S_ISREG(sbuf.st_mode)){
-        if (req.end == 0){
-          req.end = sbuf.st_size;
-        }
-        //File permission handling, if can't read, return 403 msg
-        file_access_flag = access(req.filename, R_OK);
-        printf("file access tag %d\n", file_access_flag);
-        if(file_access_flag < 0){
-          status = 403;
-          char *msg = "Permission denied";
-          send_error_msg(fd, status, "Forbidden", msg, req.type);
-          return;
-        }
-        serve_static(fd, ffd, &req, sbuf.st_size, req.type);
-      } else {
-        //Malfored request, http 400 error
-        status = 400;
+  for(int i = 0; i < REQUEST_SZ; i++){
+    if(reqs[i].assigned == 1){
+      http_request req = reqs[i];
+      if(strcmp(req.method, "GET") != 0 || !(strcmp(req.type, "HTTP/1.0") == 0 || strcmp(req.type, "HTTP/1.1") == 0) ){
+        int status = 400;
         char *msg = "Unknow Error";
         send_error_msg(fd, status, "Error", msg, req.type);
+        return;
       }
-      close(ffd);
+
+      struct stat sbuf;
+      int status = 200;
+      int file_access_flag;
+
+      int accessStatus = handle_htaccess(clientaddr, req.filename);
+      // printf("access status is %d\n", accessStatus);///////////////
+
+      if(accessStatus){
+          //if this directory is not allowed to access
+        int ffd = open(req.filename, O_RDONLY, 0);
+
+        if(ffd <= 0){
+          //File not found
+          status = 404;
+          char *msg = "Page Not Found";
+          send_error_msg(fd, status, "Not found", msg, req.type);
+        } else {
+          fstat(ffd, &sbuf);
+          //Check if is a regular file?
+          if(S_ISREG(sbuf.st_mode)){
+            if (req.end == 0){
+              req.end = sbuf.st_size;
+            }
+            //File permission handling, if can't read, return 403 msg
+            file_access_flag = access(req.filename, R_OK);
+            // printf("file access tag %d\n\n\n", file_access_flag);
+            if(file_access_flag < 0){
+              status = 403;
+              char *msg = "Permission denied";
+              send_error_msg(fd, status, "Forbidden", msg, req.type);
+              return;
+            }
+            serve_static(fd, ffd, &req, sbuf.st_size, req.type);
+          } else {
+            //Malfored request, http 400 error
+            status = 400;
+            char *msg = "Unknow Error";
+            send_error_msg(fd, status, "Error", msg, req.type);
+          }
+          close(ffd);
+        }
+      }
+
+      reqs[i].assigned = 0;
     }
   }
 
@@ -326,10 +373,19 @@ int socket_initilization(int port){
   if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
     DieWithSystemMessage("bind");
 
-  if (listen(httpd, 5) < 0)
+  if (listen(httpd, 20) < 0)
     DieWithSystemMessage("listen");
 
   return(httpd);
+}
+
+void timeout(void * client_sock_ptr){
+  int client_sock = *(int*)client_sock_ptr;
+  sleep(5);
+  printf("%d\n",client_sock);
+  printf("timeout!\n");
+  closeSocket(client_sock);
+  exit(0);
 }
 
 int main(int argc, char *argv[]){
@@ -359,13 +415,18 @@ int main(int argc, char *argv[]){
   // Concurrency handling, multi-process approach
 
   while(1){
+    printf("Accepting\n");
     client_sock = accept(server_sock, (struct sockaddr *)&clientaddr, &clientlen);
-    printf("Accept connection for %d\n", client_sock);
+    printf("Accepted\n");
+    int * client_sock_ptr = &client_sock;
+    //printf("Accept connection for %d\n", client_sock);
     if (client_sock == -1)
       DieWithSystemMessage("accept");
 
     int pid = fork();
     if(pid == 0){
+      pthread_t thread = 0;
+      pthread_create(&thread, NULL, (void *) &timeout, (void *) client_sock_ptr );
       while(1){
         process(client_sock, &clientaddr, path);
         // close(client_sock);

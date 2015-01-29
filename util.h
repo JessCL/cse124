@@ -18,6 +18,7 @@ typedef struct {
   size_t end;
   char type[MAXLINE];
   char method[MAXLINE];
+  int assigned;
 } http_request;
 
 typedef struct {
