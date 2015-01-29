@@ -230,6 +230,101 @@ int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
   }
 }
 
+
+/* Error notcie from the server-side
+ * Parameters: client socket file descriptor, requested file descriptor, http request struct, size of the requested file
+ * Returns: Null
+ */
+void send_error_msg(int fd, int status, char *msg, char *longmsg, char *type){
+    char buf[MAXLINE];
+    // HTTP/1.1 200 Not Found
+    // Content-length xxx 
+    // Message body
+    sprintf(buf, "%s %d %s\r\n", type, status, msg);
+    sprintf(buf + strlen(buf), "Content-length: %lu\r\n\r\n", strlen(longmsg));
+    sprintf(buf + strlen(buf), "%s", longmsg);
+    send_data(fd, buf, strlen(buf));
+}
+
+/* Read the requested file on disk, and send it back to the remote side
+ * Parameters: client socket file descriptor, requested file descriptor, http request struct, size of the requested file
+ * Returns: Null
+ */
+
+void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size, char *type){
+  char buf[256];
+
+  sprintf(buf, "%s 200 OK\r\n", type);
+  
+  sprintf(buf + strlen(buf), "Content-length: %llu\r\n", req->end - req->offset);
+  sprintf(buf + strlen(buf), "Content-type: %s\r\n", get_mime_type(req->filename));
+  sprintf(buf + strlen(buf), "Connection: Keep-Alive\r\n\r\n");
+
+  send_data(out_fd, buf, strlen(buf));
+
+  off_t offset = req->offset;
+  sendfile_to(out_fd, in_fd, &offset, req->end - req->offset);
+}
+
+/* Parse the client request, acquire the requested file name
+ * Parameters: client socket file descriptor, http request struct that we want to fill and return
+ * Returns: Null
+ */
+int parse_request(int fd, http_request *req, char *addr){
+  rio_t rio;
+  char buf[MAXLINE*128], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+  char prefix_addr[MAXLINE];
+  req->offset = 0;
+  req->end = 0;         
+  struct stat sbuf;     
+
+  strcpy(prefix_addr, addr);
+
+  // rio_readinitb(&rio, fd);
+  // rio_readlineb(&rio, buf, MAXLINE);
+  if( recv(fd, buf, MAXLINE*128, 0) <= 0){
+    return -1;
+  }
+
+  printf("%s\n", buf);
+  // TODO, parse the http version, and set flag, if is not GET, 400 error
+  sscanf(buf, "%s %s %s", method, uri, version); 
+
+  printf("parsed results: %d        %s %s %s\n",fd, method, uri, version);
+
+  char* filename = uri;
+  if(uri[0] == '/'){
+    filename = uri + 1;
+    int length = strlen(filename);
+    if (length == 0){
+      filename = "index.html";
+    }
+  }
+
+  if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
+    strcat(prefix_addr, "/");
+  }
+
+  //printf("file name: %s\n", filename);
+
+  strcat(prefix_addr, filename);
+
+  int ffd = open(prefix_addr, O_RDONLY, 0);
+  if(ffd > 0){
+    fstat(ffd, &sbuf);
+    if(S_ISDIR(sbuf.st_mode)){
+      strcat(prefix_addr, "/index.html");
+    }
+  }
+
+  memcpy(req->filename, prefix_addr, MAXLINE); 
+  memcpy(req->type, version, MAXLINE); 
+  memcpy(req->method, method, MAXLINE);
+
+  return 1;
+}
+
+
 /* Parse the http request, process it and generate response
  * Parameters: Client socket file descripton, client socket address info
  * Returns: None
@@ -237,9 +332,11 @@ int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
 
 void process(int fd, struct sockaddr_in *clientaddr, char *addr){
   http_request req;
-  
+
   //Parse the http request, retrive the file name etc.
-  parse_request(fd, &req, addr);
+  if( parse_request(fd, &req, addr) == -1 ){
+    return;
+  }
 
   if(strcmp(req.method, "GET") != 0 || !(strcmp(req.type, "HTTP/1.0") == 0 || strcmp(req.type, "HTTP/1.1") == 0) ){
     int status = 400;
@@ -290,6 +387,11 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
       close(ffd);
     }
   }
+
+  //If req.type == 1.0
+  //  close(client_sock);
+  // else if req.type == 1.1
+
 }
 
 /* Socket initialization, listen for web connections
@@ -326,14 +428,13 @@ int main(int argc, char *argv[]){
     DieWithUserMessage("<port>", "<path/to/document/root>");
 
   struct sockaddr_in clientaddr;
+  char *path;
   
   int default_port = 3000,
       server_sock,
       client_sock;
 
-  char buf[1024];
-  char *path = getcwd(buf, 1024);
-  socklen_t clientlen = sizeof clientaddr;
+    socklen_t clientlen = sizeof clientaddr;
 
   //Setup port number and root directory path
   default_port = atoi(argv[1]);
@@ -342,40 +443,28 @@ int main(int argc, char *argv[]){
   //Initialize the socket
   server_sock = socket_initilization(default_port);
 
-  signal(SIGPIPE, SIG_IGN);
+
+  // new pthread, sleep TIME, wake up iterate through client_sock struct array, compare current system timestamp 
+  // with struct's timestamp, if difference < TIME 
 
   // Concurrency handling, multi-process approach
-  for(int i = 0; i < 10; i++) {
-    int pid = fork();
-    if (pid == 0) {         //  child
-      while(1){
-        client_sock = accept(server_sock, (struct sockaddr *)&clientaddr, &clientlen);
-
-        if (client_sock == -1)
-          DieWithSystemMessage("accept");
-
-        printf("%d.%d.%d.%d\n",
-          (int)(clientaddr.sin_addr.s_addr&0xFF),
-          (int)((clientaddr.sin_addr.s_addr&0xFF00)>>8),
-          (int)((clientaddr.sin_addr.s_addr&0xFF0000)>>16),
-          (int)((clientaddr.sin_addr.s_addr&0xFF000000)>>24));
-
-        process(client_sock, &clientaddr, path);
-        close(client_sock);
-      }
-    } else if(pid < 0) {
-      perror("fork");
-    }
-  }
 
   while(1){
     client_sock = accept(server_sock, (struct sockaddr *)&clientaddr, &clientlen);
-    
+    printf("Accept connection for %d\n", client_sock);
     if (client_sock == -1)
       DieWithSystemMessage("accept");
 
-    process(client_sock, &clientaddr, path);
-    close(client_sock);
+    int pid = fork();
+    if(pid == 0){
+      while(1){
+        process(client_sock, &clientaddr, path);
+        // close(client_sock);
+        // exit(pid);
+      }
+    }else if (pid < 0){
+      perror("fork");
+    }
   }
 
   return 0;
