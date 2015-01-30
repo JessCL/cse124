@@ -175,7 +175,7 @@ void send_error_msg(int fd, int status, char *msg, char *longmsg, char *type){
     sprintf(buf, "%s %d %s\r\n", type, status, msg);
     sprintf(buf + strlen(buf), "Content-length: %lu\r\n\r\n", strlen(longmsg));
     sprintf(buf + strlen(buf), "%s", longmsg);
-    send_data(fd, buf, strlen(buf));
+    send(fd, buf, strlen(buf), 0);
 }
 
 /* Read the requested file on disk, and send it back to the remote side
@@ -192,7 +192,8 @@ void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size, c
   sprintf(buf + strlen(buf), "Content-type: %s\r\n", get_mime_type(req->filename));
   sprintf(buf + strlen(buf), "Connection: Keep-Alive\r\n\r\n");
 
-  send_data(out_fd, buf, strlen(buf));
+  send(out_fd, buf, strlen(buf), 0);
+
 
   off_t offset = req->offset;
   sendfile_to(out_fd, in_fd, &offset, req->end - req->offset);
@@ -381,11 +382,20 @@ int socket_initilization(int port){
 
 void timeout(void * client_sock_ptr){
   int client_sock = *(int*)client_sock_ptr;
-  sleep(5);
+  sleep(20);
   printf("%d\n",client_sock);
   printf("timeout!\n");
   closeSocket(client_sock);
-  exit(0);
+  exit(client_sock);
+}
+
+void catch(int snum) {
+  int pid;
+  int client_sock;
+
+  pid = wait(&client_sock);
+  printf("Closing client socket %d in parent process\n", WEXITSTATUS(client_sock));
+  close(WEXITSTATUS(client_sock));
 }
 
 int main(int argc, char *argv[]){
@@ -399,7 +409,9 @@ int main(int argc, char *argv[]){
       server_sock,
       client_sock;
 
-    socklen_t clientlen = sizeof clientaddr;
+  socklen_t clientlen = sizeof clientaddr;
+
+  signal(SIGCHLD, catch);
 
   //Setup port number and root directory path
   default_port = atoi(argv[1]);
@@ -415,9 +427,8 @@ int main(int argc, char *argv[]){
   // Concurrency handling, multi-process approach
 
   while(1){
-    printf("Accepting\n");
     client_sock = accept(server_sock, (struct sockaddr *)&clientaddr, &clientlen);
-    printf("Accepted\n");
+    printf("%d Accepted\n", client_sock);
     int * client_sock_ptr = &client_sock;
     //printf("Accept connection for %d\n", client_sock);
     if (client_sock == -1)
