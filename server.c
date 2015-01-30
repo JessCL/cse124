@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <string.h>
+#include <pthread.h>
 #include "rio.h"
 #include "util.h"
 
@@ -23,6 +24,9 @@ void DieWithSystemMessage(const char *msg);
 #define VERSION_SZ  10
 #define REQUEST_SZ 1024
 
+pthread_cond_t timeout_cond;
+pthread_mutex_t timeout_mutex;
+int first_flag;
 
 int getSO_ERROR(int fd) {
    int err = 1;
@@ -216,51 +220,53 @@ int parse_request(int fd, http_request reqs[], char *addr){
 
     char * line = strtok(strdup(buf), "\r\n");
     while(line) {
-      sscanf(line, "%s %s %s", method, uri, version);  
+      if( sscanf(line, "%s %s %s", method, uri, version) == 3 ){
+        if(strcmp(method, "GET") == 0 || (strcmp(version, "HTTP/1.0") == 0 || strcmp(version, "HTTP/1.1") == 0)){
+          char prefix_addr[MAXLINE];
+          strcpy(prefix_addr, addr);
 
-      if(strcmp(method, "GET") == 0){
-        char prefix_addr[MAXLINE];
-        strcpy(prefix_addr, addr);
+          for(int i = 0; i < REQUEST_SZ; i++){
+            if(reqs[i].assigned == 0){
+              reqs[i].offset = 0;
+              reqs[i].end = 0;         
 
-        for(int i = 0; i < REQUEST_SZ; i++){
-          if(reqs[i].assigned == 0){
-            reqs[i].offset = 0;
-            reqs[i].end = 0;         
+              reqs[i].assigned = 1;
 
-            reqs[i].assigned = 1;
-
-            char* filename = uri;
-            if(uri[0] == '/'){
-              filename = uri + 1;
-              int length = strlen(filename);
-              if (length == 0){
-                filename = "index.html";
+              char* filename = uri;
+              if(uri[0] == '/'){
+                filename = uri + 1;
+                int length = strlen(filename);
+                if (length == 0){
+                  filename = "index.html";
+                }
               }
-            }
 
-            if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
-              strcat(prefix_addr, "/");
-            }
-
-            //printf("file name: %s\n", filename);
-
-            strcat(prefix_addr, filename);
-
-            int ffd = open(prefix_addr, O_RDONLY, 0);
-            if(ffd > 0){
-              fstat(ffd, &sbuf);
-              if(S_ISDIR(sbuf.st_mode)){
-                strcat(prefix_addr, "/index.html");
+              if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
+                strcat(prefix_addr, "/");
               }
+
+              //printf("file name: %s\n", filename);
+
+              strcat(prefix_addr, filename);
+
+              int ffd = open(prefix_addr, O_RDONLY, 0);
+              if(ffd > 0){
+                fstat(ffd, &sbuf);
+                if(S_ISDIR(sbuf.st_mode)){
+                  strcat(prefix_addr, "/index.html");
+                }
+              }
+              printf("prefix %s\n",prefix_addr);
+              memcpy(reqs[i].filename, prefix_addr, MAXLINE); 
+              memcpy(reqs[i].type, version, VERSION_SZ); 
+              memcpy(reqs[i].method, method, METHOD_SZ);
+              break;
             }
-            printf("%s\n",prefix_addr);
-            memcpy(reqs[i].filename, prefix_addr, MAXLINE); 
-            memcpy(reqs[i].type, version, VERSION_SZ); 
-            memcpy(reqs[i].method, method, METHOD_SZ);
-            break;
-          }
-        }      
+          }      
+        }
+        
       }
+
       line  = strtok(NULL, "\r\n");
     }
 
@@ -295,6 +301,8 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
         int status = 400;
         char *msg = "Unknow Error";
         send_error_msg(fd, status, "Error", msg, req.type);
+        close(fd);
+        exit(fd);
         return;
       }
 
@@ -342,6 +350,18 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
       }
 
       reqs[i].assigned = 0;
+
+      if(strcmp(req.type, "HTTP/1.0") == 0){
+        close(fd);
+        exit(fd);
+      }
+      else if(strcmp(req.type, "HTTP/1.1") == 0 && first_flag == 0)
+      {
+        first_flag = 1;
+        pthread_mutex_lock(&timeout_mutex);
+        pthread_cond_signal(&timeout_cond);
+        pthread_mutex_unlock(&timeout_mutex);
+      }
     }
   }
 
@@ -380,11 +400,16 @@ int socket_initilization(int port){
   return(httpd);
 }
 
-void timeout(void * client_sock_ptr){
+void *timeout(void * client_sock_ptr){
   int client_sock = *(int*)client_sock_ptr;
-  sleep(20);
-  printf("%d\n",client_sock);
-  printf("timeout!\n");
+  
+  first_flag = 0;//only set as 0 here to make sure wait() is alway called before signal()
+  pthread_mutex_lock(&timeout_mutex);
+  pthread_cond_wait(&timeout_cond, &timeout_mutex);
+  pthread_mutex_unlock(&timeout_mutex);
+
+  sleep(5);
+  printf("%d timeout\n",client_sock);
   closeSocket(client_sock);
   exit(client_sock);
 }
@@ -420,6 +445,11 @@ int main(int argc, char *argv[]){
   //Initialize the socket
   server_sock = socket_initilization(default_port);
 
+   /* Initialize mutex and condition variable objects */
+  pthread_mutex_init(&timeout_mutex, NULL);
+  pthread_cond_init(&timeout_cond, NULL);
+
+  first_flag = -1;
 
   // new pthread, sleep TIME, wake up iterate through client_sock struct array, compare current system timestamp 
   // with struct's timestamp, if difference < TIME 
@@ -437,7 +467,7 @@ int main(int argc, char *argv[]){
     int pid = fork();
     if(pid == 0){
       pthread_t thread = 0;
-      pthread_create(&thread, NULL, (void *) &timeout, (void *) client_sock_ptr );
+      pthread_create(&thread, NULL, timeout, (void *) client_sock_ptr );
       while(1){
         process(client_sock, &clientaddr, path);
         // close(client_sock);
