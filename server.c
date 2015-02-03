@@ -23,6 +23,9 @@ void DieWithSystemMessage(const char *msg);
 #define METHOD_SZ   5
 #define VERSION_SZ  10
 #define REQUEST_SZ 1024
+#define TRUE 1
+#define FALSE 0
+#define DEBUG FALSE
 
 pthread_cond_t timeout_cond;
 pthread_mutex_t timeout_mutex;
@@ -99,7 +102,7 @@ int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
       return 1;
     }
     else{
-      printf("Success open htaccess file\n");//////////////
+      if (DEBUG == TRUE) printf("Success open htaccess file\n");//////////////
       rio_t rio;
       char buf[MAXLINE], accPerm[MAXLINE], fromChar[MAXLINE], tmpbuf[MAXLINE];
       unsigned int subnet[5];
@@ -120,7 +123,7 @@ int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
           ++pos;
         }
         if(addrFlag){//the entry contains an IP address
-          printf("Handling addrs in htaccess\n");
+          if (DEBUG == TRUE) printf("Handling addrs in htaccess\n");
           sscanf(tmpbuf, "%u.%u.%u.%u/%u", 
             &subnet[0], &subnet[1], &subnet[2], &subnet[3], &subnet[4]); 
           IPaddr = (subnet[0]<<24)+(subnet[1]<<16)+(subnet[2]<<8)+subnet[3];
@@ -129,7 +132,7 @@ int handle_htaccess(struct sockaddr_in *clientaddr, char* filename){
             (ntohl(clientaddr->sin_addr.s_addr)>>(32-subnet[4])<<(32-subnet[4])));*/
         }
         else{//the entry contains a domain name
-          printf("Getting host by name\n");
+          if (DEBUG == TRUE) printf("Getting host by name\n");
           struct hostent host, *hostptr = &host;
           hostptr = gethostbyname(tmpbuf);
           if(hostptr){
@@ -209,71 +212,124 @@ void serve_static(int out_fd, int in_fd, http_request *req, size_t total_size, c
  */
 int parse_request(int fd, http_request reqs[], char *addr){
   rio_t rio;
-  char buf[MAXLINE * 128], method[METHOD_SZ], uri[URI_SZ], version[VERSION_SZ];
-  
+  char request_body[MAXLINE * 8], buf[MAXLINE], method[METHOD_SZ], uri[URI_SZ], version[VERSION_SZ];
+  int i, j;
   struct stat sbuf;     
 
   // rio_readinitb(&rio, fd);
   // rio_readlineb(&rio, buf, MAXLINE);
-  if( recv(fd, buf, MAXLINE * 128, 0) > 0){
-    // printf("inside recv loop %s\n", buf);
+  memset(request_body, 0, MAXLINE * 8);
+  memset(buf, 0, MAXLINE);
 
-    char * line = strtok(strdup(buf), "\r\n");
-    while(line) {
-      if( sscanf(line, "%s %s %s", method, uri, version) == 3 ){
-        if(strcmp(method, "GET") == 0 || (strcmp(version, "HTTP/1.0") == 0 || strcmp(version, "HTTP/1.1") == 0)){
-          char prefix_addr[MAXLINE];
-          strcpy(prefix_addr, addr);
+  while( recv(fd, buf, MAXLINE - 1, 0) > 0){
+    // for (i = 0; i < MAXLINE; ++i)
+    // {
+    //   printf("%d ", buf[i]);
+    //   if(buf[i] == 0){
+    //     break;
+    //   }
+    //   /* code */
+    // }
+    if (DEBUG == TRUE) printf("\n\n\n");
+    strcat(request_body, buf);
+    if (DEBUG == TRUE) printf("%s\n\n\n",request_body);
 
-          for(int i = 0; i < REQUEST_SZ; i++){
-            if(reqs[i].assigned == 0){
-              reqs[i].offset = 0;
-              reqs[i].end = 0;         
+    int flag = 0;
 
-              reqs[i].assigned = 1;
+    for (i = 0; i < sizeof(request_body) - 4; ++i)
+    {
+      if (request_body[i] == '\r' && request_body[i+1] == '\n' && request_body[i+2] == '\r' && request_body[i+3] == '\n')
+      {
+        if (DEBUG == TRUE) printf("captured CRLF CRLF\n");
+        char * line = strtok(strdup(request_body), "\r\n");
+        // while(line) {
+          if( line && sscanf(line, "%s %s %s", method, uri, version) == 3 ){
+            flag = 1;
+            if(strcmp(method, "GET") == 0 || (strcmp(version, "HTTP/1.0") == 0 || strcmp(version, "HTTP/1.1") == 0)){
+              if (DEBUG == TRUE) printf("%s\n", line);
+              char prefix_addr[MAXLINE];
+              strcpy(prefix_addr, addr);
 
-              char* filename = uri;
-              if(uri[0] == '/'){
-                filename = uri + 1;
-                int length = strlen(filename);
-                if (length == 0){
-                  filename = "index.html";
+              for(j = 0; j < REQUEST_SZ; j++){
+                if(reqs[j].assigned == 0){
+                  reqs[j].valid = 1;
+                  reqs[j].offset = 0;
+                  reqs[j].end = 0;         
+
+                  reqs[j].assigned = 1;
+
+                  char* filename = uri;
+                  if(uri[0] == '/'){
+                    filename = uri + 1;
+                    int length = strlen(filename);
+                    if (length == 0){
+                      filename = "index.html";
+                    }
+                  }
+
+                  if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
+                    strcat(prefix_addr, "/");
+                  }
+
+                  //printf("file name: %s\n", filename);
+
+                  strcat(prefix_addr, filename);
+
+                  int ffd = open(prefix_addr, O_RDONLY, 0);
+                  if(ffd > 0){
+                    fstat(ffd, &sbuf);
+                    if(S_ISDIR(sbuf.st_mode)){
+                      strcat(prefix_addr, "/index.html");
+                    }
+                  }
+                  if (DEBUG == TRUE) printf("prefix %s\n",prefix_addr);
+                  memcpy(reqs[j].filename, prefix_addr, MAXLINE); 
+                  memcpy(reqs[j].type, version, VERSION_SZ); 
+                  memcpy(reqs[j].method, method, METHOD_SZ);
+                  memcpy(reqs[j].uri, uri, URI_SZ);
+                  break;
+                }
+              }      
+            }else{
+              for(j = 0; j < REQUEST_SZ; j++){
+                if(reqs[j].assigned == 0){
+                  reqs[j].valid = 0;
+                  reqs[j].assigned = 1;
+                  break;
                 }
               }
 
-              if(prefix_addr[strlen(prefix_addr) - 1] != '/'){
-                strcat(prefix_addr, "/");
-              }
-
-              //printf("file name: %s\n", filename);
-
-              strcat(prefix_addr, filename);
-
-              int ffd = open(prefix_addr, O_RDONLY, 0);
-              if(ffd > 0){
-                fstat(ffd, &sbuf);
-                if(S_ISDIR(sbuf.st_mode)){
-                  strcat(prefix_addr, "/index.html");
-                }
-              }
-              printf("prefix %s\n",prefix_addr);
-              memcpy(reqs[i].filename, prefix_addr, MAXLINE); 
-              memcpy(reqs[i].type, version, VERSION_SZ); 
-              memcpy(reqs[i].method, method, METHOD_SZ);
-              break;
             }
-          }      
-        }
-        
+            
+          }else if(line && sscanf(line, "%s %s %s", method, uri, version) == 2){
+            flag = 1;
+            for(j = 0; j < REQUEST_SZ; j++){
+              if(reqs[j].assigned == 0){
+                reqs[j].valid = 0;
+                reqs[j].assigned = 1;
+                break;
+              }
+            }
+          }
+
+        //   line  = strtok(NULL, "\r\n");
+        // }
       }
-
-      line  = strtok(NULL, "\r\n");
     }
-
-    return 1;
-  }else{
-    return -1;
+    if(flag == 1){
+      return 1;      
+    }
+    memset(buf, 0, MAXLINE);
   }
+
+
+  // if( recv(fd, buf, MAXLINE, 0) > 0){
+  //   if (DEBUG == TRUE) printf("inside recv loop %s\n", buf);
+
+  //   return 1;
+  // }else{
+  //   return -1;
+  // }
   // TODO, parse the http version, and set flag, if is not GET, 400 error
   // sscanf(buf, "%s %s %s", method, uri, version); 
 
@@ -288,19 +344,28 @@ int parse_request(int fd, http_request reqs[], char *addr){
 
 void process(int fd, struct sockaddr_in *clientaddr, char *addr){
   http_request reqs[REQUEST_SZ];
-
+  int i;
   //Parse the http request, retrive the file name etc.
   if( parse_request(fd, reqs, addr) == -1 ){
+    int status = 400;
+    char *msg = "Unknow Error";
+    send_error_msg(fd, status, "Error", msg, "HTTP/1.1");
+    close(fd);
+    exit(fd);
     return;
+
   }
 
-  for(int i = 0; i < REQUEST_SZ; i++){
+
+  for(i = 0; i < REQUEST_SZ; i++){
     if(reqs[i].assigned == 1){
       http_request req = reqs[i];
-      if(strcmp(req.method, "GET") != 0 || !(strcmp(req.type, "HTTP/1.0") == 0 || strcmp(req.type, "HTTP/1.1") == 0) ){
+      if(reqs[i].valid != 1 && strcmp(req.method, "GET") != 0 || !(strcmp(req.type, "HTTP/1.0") == 0 || strcmp(req.type, "HTTP/1.1") == 0) || req.uri[0] != '/' ){
+        if (DEBUG == TRUE) printf("400 response %s %s %s\n",req.method, req.type, req.uri);
         int status = 400;
         char *msg = "Unknow Error";
-        send_error_msg(fd, status, "Error", msg, req.type);
+        reqs[i].assigned = 0;
+        send_error_msg(fd, status, "Error", msg, "HTTP/1.1");
         close(fd);
         exit(fd);
         return;
@@ -336,6 +401,7 @@ void process(int fd, struct sockaddr_in *clientaddr, char *addr){
               status = 403;
               char *msg = "Permission denied";
               send_error_msg(fd, status, "Forbidden", msg, req.type);
+              reqs[i].assigned = 0;
               return;
             }
             serve_static(fd, ffd, &req, sbuf.st_size, req.type);
@@ -408,8 +474,8 @@ void *timeout(void * client_sock_ptr){
   pthread_cond_wait(&timeout_cond, &timeout_mutex);
   pthread_mutex_unlock(&timeout_mutex);
 
-  sleep(5);
-  printf("%d timeout\n",client_sock);
+  sleep(1000);
+  if (DEBUG == TRUE) printf("%d timeout\n",client_sock);
   closeSocket(client_sock);
   exit(client_sock);
 }
@@ -419,7 +485,7 @@ void catch(int snum) {
   int client_sock;
 
   pid = wait(&client_sock);
-  printf("Closing client socket %d in parent process\n", WEXITSTATUS(client_sock));
+  if (DEBUG == TRUE) printf("Closing client socket %d in parent process\n", WEXITSTATUS(client_sock));
   close(WEXITSTATUS(client_sock));
 }
 
@@ -458,7 +524,7 @@ int main(int argc, char *argv[]){
 
   while(1){
     client_sock = accept(server_sock, (struct sockaddr *)&clientaddr, &clientlen);
-    printf("%d Accepted\n", client_sock);
+    if (DEBUG == TRUE) printf("%d Accepted\n", client_sock);
     int * client_sock_ptr = &client_sock;
     //printf("Accept connection for %d\n", client_sock);
     if (client_sock == -1)

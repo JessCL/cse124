@@ -88,7 +88,8 @@ ssize_t rio_readlineb(rio_t *rp, void *usrbuf, size_t maxlen){
   return n;
 }
 
-//Linux sendfile 
+//Linux sendfile alike helper method, refer to http://man7.org/tlpi/code/online/dist/sockets/sendfile.c.html
+// copyright 2010, Michael Kerrisk 
 ssize_t sendfile_to(int out_fd, int in_fd, off_t *offset, size_t count)
 {
   off_t orig;

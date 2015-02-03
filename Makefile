@@ -1,4 +1,4 @@
-CC = c99
+CC = gcc
 
 all: httpd
 

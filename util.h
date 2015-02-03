@@ -19,6 +19,8 @@ typedef struct {
   char type[MAXLINE];
   char method[MAXLINE];
   int assigned;
+  char uri[MAXLINE];
+  int valid;
 } http_request;
 
 typedef struct {

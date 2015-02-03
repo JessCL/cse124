@@ -1,7 +1,7 @@
 A simple HTTP web server in C, UCSD CSE 124 Winter 2015 project
 
-Yu Xia
-MengQi Yu
+Yu Xia: A53041213
+MengQi Yu: A53077101
 
 Features
 --------
